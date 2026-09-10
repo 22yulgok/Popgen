@@ -1,0 +1,25 @@
+## Stage B -- projection-only.
+##
+## Loads the model saved in Stage A and projects ONLY the new individuals in
+## new_samples.* using smartpca's existing least-squares (lsqproject) code
+## path.  The reference PCA is NOT recomputed; reference genotypes are not
+## needed here.
+##
+## Run with:   smartpca -p projection.par
+
+genotypename:      new_samples.geno
+snpname:           new_samples.snp
+indivname:         new_samples.ind
+
+## NEW: load the saved model and project only.
+modelname:         reference.smartpca.model
+projectionoutname: new_samples.evec
+projectiononly:    YES
+
+## Optional (default YES): require every model SNP to be present in the new
+## dataset.  Set to NO to allow missing model SNPs (treated as missing
+## genotypes for every projected individual, consistent with lsqproject).
+# modelstrict:     YES
+
+## Optional: match stock high-precision .evec formatting.
+# hiprec:          YES

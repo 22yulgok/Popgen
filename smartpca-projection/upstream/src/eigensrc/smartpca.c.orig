@@ -23,12 +23,6 @@
 #include "exclude.h"
 #include "globals.h"
 
-/* ADDED (feature/smartpca-persistent-projection): save/load a PCA projection
- * model and project new individuals without recomputing the reference PCA.
- * See smartpca_model.h.  Guarded by new .par parameters; when none are set,
- * behaviour is identical to stock smartpca v18140. */
-#include "smartpca_model.h"
-
 /** 
  Most of this code written by Nick Patterson 
  (Broad institute, Harvard Medical, Harvard Evolutionary Biology)
@@ -307,14 +301,6 @@ char *outputname = NULL;
 char *outputvname = NULL;
 char *weightname = NULL;
 FILE *ofile, *ovfile;
-
-/* ADDED (feature/smartpca-persistent-projection) */
-char *modeloutname = NULL;      /* save PCA projection model here (stage A) */
-char *modelname = NULL;         /* load PCA projection model from here (stage B) */
-char *projectionoutname = NULL; /* .evec output for projected new samples */
-int projectiononly = NO;        /* if YES: load model, project new samples, exit */
-int modelstrict = YES;          /* require every model SNP present in new data */
-static int do_project_only (void);     /* forward decl; defined below main() */
 
 double twestxx (double *lam, int m, double *pzn, double *pzvar);
 double twnorm (double lam, double m, double n);
@@ -647,15 +633,6 @@ main (int argc, char **argv)
    printf("terminating...\n") ;
    return 0 ;
   }
-
-  /* ADDED (feature/smartpca-persistent-projection):
-   * Stage B.  If projectiononly is set, load the saved model and project the
-   * new individuals using the stock lsqproj() code path, then exit.  The
-   * reference eigenanalysis is NOT recomputed. */
-  if (projectiononly) {
-    return do_project_only ();
-  }
-
   if (regmode == NO) printf("lsqproject off:  deprecated\n") ;
   if (usepopsformissing && shrinkmode) { 
     fatalx("usepopsformissing and shrinkmode together not supported\n") ;
@@ -1586,22 +1563,6 @@ main (int argc, char **argv)
       setdiag(eigscmat, eigscale, numeigs) ; 
       mulmat(acoeffs, eigscmat, acoeffs,  numeigs, numeigs, numindivs) ; 
 
-      /* ADDED (feature/smartpca-persistent-projection):
-       * Stage A.  Persist the internal projection state so that a later,
-       * independent process can project new individuals with lsqproj()
-       * without recomputing this eigenanalysis.  Uses exactly the arrays the
-       * projection above consumed (xmean, xfancy, ffvecs, fxscal, eigscale). */
-      if (modeloutname != NULL) {
-        write_pca_model (modeloutname, WVERSION,
-                         ncols, numeigs, nrows,
-                         fancynorm, altnormstyle, missingmode,
-                         xsnplist, xmean, xfancy,
-                         ffvecs, fxscal, eigscale, lambda);
-      }
-
-   }
-   else if (modeloutname != NULL) {
-     fatalx ("modeloutname requires lsqproject: YES (regmode)\n");
    }
 
 // evec output
@@ -2090,176 +2051,6 @@ main (int argc, char **argv)
   return 0;
 }
 
-/* ADDED (feature/smartpca-persistent-projection).
- *
- * Stage B: load a saved PCA projection model and project the individuals in
- * the projection dataset using the UNMODIFIED lsqproj() routine.  No reference
- * eigenanalysis is performed.
- *
- * The stock projection consumes these file-scope globals: xmean, xfancy,
- * numeigs, numindivs, regmode, usepopsformissing, fancynorm, altnormstyle,
- * missingmode.  We set them from the loaded model, build an xsnplist whose
- * columns correspond to the model's SNP ordering (pointing at the new
- * dataset's SNP objects), and then call lsqproj() + apply eigscale exactly as
- * main() does after computing the reference PCA.
- */
-static int
-do_project_only (void)
-{
-  PcaModel *m;
-  int *order = NULL, *flip = NULL;
-  SNP **modelsnps;              /* ncols columns aligned to the model */
-  SNP *missing_snp;             /* shared placeholder for absent SNPs */
-  Indiv **xindlist;
-  int *xtypes;
-  double *acoeffs, *bcoeffs, *eigscmat;
-  int i, j, ncols, nflip = 0;
-  int nignore, numrisks = 1;
-  FILE *pfile;
-  Indiv *indx;
-  double y, ymem;
-
-  cputime (0);
-  calcmem (0);
-  printf ("## smartpca version: %s\n", WVERSION);
-  printf ("## PROJECTION-ONLY mode (persistent PCA model)\n");
-
-  if (modelname == NULL)
-    fatalx ("projectiononly: YES requires modelname:\n");
-  if (genotypename == NULL || snpname == NULL || indivname == NULL)
-    fatalx ("projectiononly needs genotypename/snpname/indivname for the new samples\n");
-
-  packmode = YES;
-  setomode (&outputmode, omode);
-
-  m = read_pca_model (modelname);
-
-  /* Load the new dataset. */
-  numsnps = getsnps (snpname, &snpmarkers, 0.0, badsnpname, &nignore, numrisks);
-  numindivs = getindivs (indivname, &indivmarkers);
-  getgenos (genotypename, snpmarkers, indivmarkers, numsnps, numindivs, nignore);
-
-  /* Validate compatibility and compute the model->newdata SNP mapping. */
-  model_check_and_align (m, snpmarkers, numsnps, modelstrict, &order, &flip);
-
-  ncols = m->ncols;
-
-  /* Configure the stock normalisation/projection globals from the model so
-   * that fixxrow()/lsqproj() reproduce the reference computation exactly. */
-  numeigs = m->numeigs;
-  fancynorm = m->fancynorm;
-  altnormstyle = m->altnormstyle;
-  missingmode = m->missingmode;
-  regmode = YES;                /* lsqproject path */
-  xmean = m->xmean;             /* consumed by fixxrow() inside lsqproj() */
-  xfancy = m->xfancy;
-
-  if (numeigs > numindivs)
-    printf ("## note: numeigs(%d) > #new samples(%d)\n", numeigs, numindivs);
-
-  /* Recode genotypes for SNPs whose alleles are swapped relative to the model
-   * (g -> 2-g), using the stock flipalleles() helper. */
-  for (i = 0; i < ncols; ++i) {
-    if (order[i] >= 0 && flip[i]) {
-      flipalleles (snpmarkers[order[i]]);
-      ++nflip;
-    }
-  }
-  if (nflip > 0)
-    printf ("## recoded %d SNPs to match model allele orientation\n", nflip);
-
-  /* Placeholder SNP for model columns absent from the new dataset: marked
-   * ignore so loadxdataind() leaves the row missing (-1) and lsqproj() drops
-   * it per-individual, exactly like a genotype that is missing. */
-  ZALLOC (missing_snp, 1, SNP);
-  missing_snp->ignore = YES;
-  missing_snp->gtypes = NULL;
-  missing_snp->tagnumber = 0;
-
-  /* Build the model-aligned SNP list. */
-  ZALLOC (modelsnps, ncols, SNP *);
-  for (i = 0; i < ncols; ++i) {
-    if (order[i] >= 0) {
-      modelsnps[i] = snpmarkers[order[i]];
-      modelsnps[i]->ignore = NO;
-      modelsnps[i]->tagnumber = 0;      /* >=0 so lsqproj() includes it */
-    }
-    else {
-      modelsnps[i] = missing_snp;
-    }
-  }
-
-  /* All new individuals are projected. */
-  ZALLOC (xindlist, numindivs, Indiv *);
-  ZALLOC (xtypes, numindivs, int);
-  for (i = 0; i < numindivs; ++i) {
-    indx = indivmarkers[i];
-    indx->idnum = i;
-    xindlist[i] = indx;
-    xtypes[i] = 0;              /* single dummy "population" for lsqproj */
-  }
-
-  ZALLOC (acoeffs, (long) numindivs * numeigs, double);
-  ZALLOC (bcoeffs, (long) numindivs * numeigs, double);
-
-  /* The stock least-squares projection, reused verbatim. */
-  lsqproj (-99, modelsnps, ncols, xindlist, numindivs,
-           m->fxscal, m->ffvecs, acoeffs, bcoeffs, xtypes, 1);
-
-  /* Apply the persisted per-PC eigscale, exactly as main() does at the end of
-   * its regmode block: acoeffs := diag(eigscale) * acoeffs. */
-  ZALLOC (eigscmat, numeigs * numeigs, double);
-  setdiag (eigscmat, m->eigscale, numeigs);
-  mulmat (acoeffs, eigscmat, acoeffs, numeigs, numeigs, numindivs);
-
-  /* Write the projected coordinates in stock .evec format. */
-  if (projectionoutname != NULL)
-    openit (projectionoutname, &pfile, "w");
-  else
-    pfile = stdout;
-
-  fprintf (pfile, "%20s ", "#eigvals:");
-  for (j = 0; j < numeigs; j++)
-    fprintf (pfile, "%9.3f ", m->lambda[j]);
-  fprintf (pfile, "\n");
-
-  for (i = 0; i < numindivs; i++) {
-    indx = indivmarkers[i];
-    if (indx->ignore)
-      continue;
-    fprintf (pfile, "%20s ", indx->ID);
-    for (j = 0; j < numeigs; j++) {
-      y = acoeffs[j * numindivs + i];
-      if (hiprec)
-        fprintf (pfile, "%12.6f  ", y);
-      else
-        fprintf (pfile, "%10.4f  ", y);
-    }
-    if (qtmode)
-      fprintf (pfile, "%15.6e\n", indx->qval);
-    else
-      fprintf (pfile, "%15s\n", indx->egroup);
-  }
-  if (projectionoutname != NULL)
-    fclose (pfile);
-
-  free (acoeffs);
-  free (bcoeffs);
-  free (eigscmat);
-  free (modelsnps);
-  free (missing_snp);
-  free (xindlist);
-  free (xtypes);
-  free (order);
-  free (flip);
-  free_pca_model (m);
-
-  ymem = calcmem (1) / 1.0e6;
-  printf ("##end of smartpca (projection-only): %12.3f seconds cpu %12.3f Mbytes in use\n",
-          cputime (1), ymem);
-  return 0;
-}
-
 void
 readcommands (int argc, char **argv)
 {
@@ -2311,12 +2102,6 @@ readcommands (int argc, char **argv)
   getstring (ph, "evecoutname:", &outputname);  /* changed 11/02/06 */
   getstring (ph, "outputvals:", &outputvname);
   getstring (ph, "evaloutname:", &outputvname); /* changed 11/02/06 */
-  /* ADDED (feature/smartpca-persistent-projection) */
-  getstring (ph, "modeloutname:", &modeloutname);
-  getstring (ph, "modelname:", &modelname);
-  getstring (ph, "projectionoutname:", &projectionoutname);
-  getint (ph, "projectiononly:", &projectiononly);
-  getint (ph, "modelstrict:", &modelstrict);
   getstring (ph, "badsnpname:", &badsnpname);
   getstring (ph, "outliername:", &outliername);
   getstring (ph, "outlieroutname:", &outliername);      /* changed 11/02/06 */

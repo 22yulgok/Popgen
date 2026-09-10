@@ -1,0 +1,30 @@
+## Stage A -- reference PCA + save projection model.
+##
+## Runs the normal smartpca eigenanalysis on the reference individuals exactly
+## as stock smartpca v18140 does, writes the usual .evec/.eval, and (because
+## modeloutname is set) additionally serialises the internal projection state
+## to reference.smartpca.model so it can be reused later.
+##
+## Run with:   smartpca -p reference.par
+
+genotypename:   reference.geno
+snpname:        reference.snp
+indivname:      reference.ind
+poplistname:    reference.pops
+
+evecoutname:    reference.evec
+evaloutname:    reference.eval
+
+altnormstype:   NO
+numoutevec:     20
+numoutlieriter: 0
+numoutlierevec: 0
+outliersigmathresh: 6.0
+numthreads:     8
+qtmode:         0
+lsqproject:     YES
+
+## NEW: persist the PCA projection model (SNP identity/order, allele coding,
+## per-SNP normalisation xmean/xfancy, SNP loadings ffvecs, per-PC scaling
+## fxscal + eigscale, eigenvalues, numeigs, normalisation flags).
+modeloutname:   reference.smartpca.model
