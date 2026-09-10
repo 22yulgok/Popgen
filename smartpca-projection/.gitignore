@@ -1,0 +1,11 @@
+# Build outputs and artifacts (do not commit)
+build/
+*.o
+*.a
+*.evec
+*.eval
+*.log
+*.smartpca.model
+
+# Local Reference-LAPACK checkout (fetched by build.sh when needed)
+upstream/lapack/

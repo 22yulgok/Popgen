@@ -1,0 +1,25 @@
+# Conda environment for building and testing the smartpca persistent-projection
+# feature (EIGENSOFT smartpca v18140 + modeloutname/projectiononly).
+#
+#   conda env create -f environment.yml
+#   conda activate smartpca-projection
+#   ./scripts/build.sh
+#   ./scripts/run_tests.sh
+#
+# The build uses the stock EIGENSOFT dependencies (OpenBLAS/LAPACK + GSL), so
+# the compiled smartpca is the real thing, not a reduced variant.
+name: smartpca-projection
+channels:
+  - conda-forge
+dependencies:
+  # ---- build toolchain ----
+  - c-compiler          # gcc
+  - fortran-compiler    # gfortran (LAPACK reference symbols / linkage)
+  - make
+  - pkg-config
+  # ---- EIGENSOFT / smartpca numerical dependencies ----
+  - openblas            # BLAS + LAPACK backend used by eigensrc/eigx.c
+  - liblapack           # provides dspev_/dpotrf_/dgetr* used by smartpca
+  - gsl                 # required by the fast-PCA (fastmode) code path
+  # ---- test harness (pure-python, no heavy deps needed) ----
+  - python>=3.9
